@@ -1,0 +1,55 @@
+# Node.js 依赖目录
+node_modules/
+
+# 日志文件
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# 运行时数据
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# 测试报告和截图
+reports/
+
+# 环境配置文件
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# IDE和编辑器文件
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# 临时文件
+.tmp/
+.temp/
+
+# 构建输出
+dist/
+build/
+out/
+
+# 缓存目录
+.cache/
+.npm/
+.eslintcache
+
+# Playwright特定文件
+test-results/
+playwright-report/
+.playwright-cache/
+
+# Lighthouse特定文件
+.lighthouseci/
