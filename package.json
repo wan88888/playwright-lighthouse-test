@@ -4,7 +4,9 @@
   "description": "使用Playwright和Lighthouse衡量网页性能和识别可访问性问题",
   "main": "index.js",
   "scripts": {
-    "test": "node index.js"
+    "test": "node index.js",
+    "batch": "node batch-test.js",
+    "batch:optimized": "node optimized-batch-test.js"
   },
   "keywords": [
     "playwright",

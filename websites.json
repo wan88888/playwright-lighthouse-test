@@ -1,0 +1,17 @@
+{
+  "websites": [
+    "https://playwright.dev/",
+    "https://www.baidu.com/",
+    "https://www.github.com/",
+    "https://www.zhihu.com/",
+    "https://www.bilibili.com/"
+  ],
+  "testOptions": {
+    "outputFormat": "html",
+    "categories": ["performance", "accessibility", "best-practices", "seo"],
+    "screenshotOptions": {
+      "fullPage": true,
+      "deviceScaleFactor": 2
+    }
+  }
+}

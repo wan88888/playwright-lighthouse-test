@@ -53,3 +53,6 @@ playwright-report/
 
 # Lighthouse特定文件
 .lighthouseci/
+
+# 测试结果缓存
+cache/

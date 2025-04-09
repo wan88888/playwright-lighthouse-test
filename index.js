@@ -60,17 +60,23 @@ async function runLighthouseTest(testUrl, options = {}) {
         '--headless',
         '--disable-gpu',
         '--no-sandbox',
-        '--disable-dev-shm-usage'
+        '--disable-dev-shm-usage',
+        '--disable-extensions',
+        '--disable-component-extensions-with-background-pages',
+        '--disable-background-networking',
+        '--disable-component-update',
+        '--disable-client-side-phishing-detection'
       ],
       logLevel: 'error',
       connectionPollInterval: 500,
-      maxConnectionRetries: 10,
-      startingPort: config.port
+      maxConnectionRetries: 15,
+      startingPort: config.port,
+      chromeStartupTimeout: 120000 // 增加Chrome启动超时时间到120秒
     });
     
     // 确保Chrome已完全启动
     console.log(`Chrome已启动，调试端口: ${chrome.port}`);
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    await new Promise(resolve => setTimeout(resolve, 3000)); // 增加等待时间
     
     // 获取Lighthouse模块
     const lighthouse = await getLighthouse();
@@ -85,13 +91,106 @@ async function runLighthouseTest(testUrl, options = {}) {
       onlyCategories: config.onlyCategories,
       port: chrome.port,
       disableStorageReset: true,
-      throttlingMethod: 'simulate'
+      throttlingMethod: 'simulate',
+      maxWaitForLoad: 60000, // 增加页面加载等待时间
+      formFactor: 'desktop',
+      screenEmulation: {
+        mobile: false,
+        width: 1350,
+        height: 940,
+        deviceScaleFactor: 1,
+        disabled: false,
+      },
+      emulatedUserAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.102 Safari/537.36',
+      // 添加额外的设置以解决导航标记问题
+      skipAudits: ['uses-http2'],
+      settings: {
+        onlyAudits: null,
+        onlyCategories: config.onlyCategories,
+        skipAudits: ['uses-http2'],
+        maxWaitForLoad: 60000,
+        throttlingMethod: 'simulate',
+        throttling: {
+          rttMs: 40,
+          throughputKbps: 10240,
+          cpuSlowdownMultiplier: 1,
+          requestLatencyMs: 0,
+          downloadThroughputKbps: 0,
+          uploadThroughputKbps: 0
+        }
+      }
     };
     
-    // 运行Lighthouse审计
+    // 运行Lighthouse审计，添加重试机制
     console.log('运行Lighthouse审计...');
     console.log(`使用端口 ${chrome.port} 连接到Chrome...`);
-    const runnerResult = await lighthouse(testUrl, lighthouseOptions);
+    
+    let runnerResult;
+    let retryCount = 0;
+    const maxRetries = 2;
+    
+    while (retryCount <= maxRetries) {
+      try {
+        console.log(`Lighthouse审计尝试 ${retryCount + 1}/${maxRetries + 1}`);
+        runnerResult = await lighthouse(testUrl, lighthouseOptions);
+        break; // 成功则跳出循环
+      } catch (lhError) {
+        console.error(`Lighthouse审计失败 (尝试 ${retryCount + 1}/${maxRetries + 1}):`, lhError.message);
+        
+        if (lhError.message.includes('start lh:driver:navigate')) {
+          console.log('检测到导航标记问题，调整配置后重试...');
+          // 调整配置以解决导航标记问题
+          lighthouseOptions.settings = {
+            ...lighthouseOptions.settings,
+            skipAudits: ['uses-http2', 'screenshot-thumbnails', 'full-page-screenshot'],
+            throttlingMethod: 'provided',
+            throttling: {
+              rttMs: 0,
+              throughputKbps: 0,
+              cpuSlowdownMultiplier: 1
+            }
+          };
+        }
+        
+        if (retryCount < maxRetries) {
+          retryCount++;
+          // 指数退避策略
+          const waitTime = Math.pow(2, retryCount) * 2000;
+          console.log(`等待 ${waitTime/1000} 秒后重试...`);
+          await new Promise(resolve => setTimeout(resolve, waitTime));
+          
+          // 重启Chrome以确保干净的环境
+          try {
+            await chrome.kill();
+            console.log('重启Chrome浏览器...');
+            chrome = await chromeLauncher.launch({
+              chromeFlags: [
+                '--headless',
+                '--disable-gpu',
+                '--no-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-extensions'
+              ],
+              logLevel: 'error',
+              connectionPollInterval: 500,
+              maxConnectionRetries: 15,
+              startingPort: config.port
+            });
+            lighthouseOptions.port = chrome.port;
+            console.log(`Chrome已重启，新调试端口: ${chrome.port}`);
+            await new Promise(resolve => setTimeout(resolve, 3000));
+          } catch (restartError) {
+            console.error('重启Chrome失败:', restartError.message);
+          }
+        } else {
+          throw lhError; // 重试次数用尽，抛出错误
+        }
+      }
+    }
+    
+    if (!runnerResult) {
+      throw new Error('Lighthouse审计未返回结果');
+    }
     
     // 处理报告
     if (runnerResult && runnerResult.report) {
@@ -221,43 +320,102 @@ async function captureScreenshot(url, outputPath, options = {}) {
   
   const defaultOptions = {
     fullPage: true,
-    timeout: 30000,
-    waitUntil: 'networkidle',
-    deviceScaleFactor: 1
+    timeout: 60000, // 增加默认超时时间到60秒
+    waitUntil: 'domcontentloaded', // 改为更可靠的导航完成条件
+    deviceScaleFactor: 1,
+    retryCount: 2 // 添加重试次数
   };
   
   const screenshotOptions = { ...defaultOptions, ...options };
   
-  const browser = await chromium.launch();
+  const browser = await chromium.launch({
+    args: ['--disable-dev-shm-usage', '--no-sandbox'] // 添加更稳定的启动参数
+  });
+  
   try {
-    const context = await browser.newContext({
-      deviceScaleFactor: screenshotOptions.deviceScaleFactor
-    });
-    const page = await context.newPage();
+    let retryAttempt = 0;
+    let lastError = null;
     
-    // 设置超时
-    page.setDefaultTimeout(screenshotOptions.timeout);
+    while (retryAttempt <= screenshotOptions.retryCount) {
+      try {
+        const context = await browser.newContext({
+          deviceScaleFactor: screenshotOptions.deviceScaleFactor,
+          viewport: { width: 1280, height: 720 } // 设置一个标准视口大小
+        });
+        const page = await context.newPage();
+        
+        // 设置超时
+        page.setDefaultTimeout(screenshotOptions.timeout);
+        
+        // 添加页面错误处理
+        page.on('pageerror', error => {
+          console.warn(`页面错误: ${error.message}`);
+        });
+        
+        // 添加请求失败处理
+        page.on('requestfailed', request => {
+          console.warn(`请求失败: ${request.url()}`);
+        });
+        
+        console.log(`导航到页面 (尝试 ${retryAttempt + 1}/${screenshotOptions.retryCount + 1})，等待条件: ${screenshotOptions.waitUntil}`);
+        
+        // 导航到页面
+        await page.goto(url, { 
+          waitUntil: screenshotOptions.waitUntil,
+          timeout: screenshotOptions.timeout 
+        });
+        
+        // 智能等待策略
+        try {
+          // 首先尝试等待网络空闲，但设置较短的超时
+          await page.waitForLoadState('networkidle', { timeout: 10000 });
+          console.log('页面网络已空闲');
+        } catch (loadError) {
+          console.log('等待网络空闲超时，继续执行...');
+          // 如果等待网络空闲超时，继续执行，不中断流程
+        }
+        
+        // 确保页面内容已加载
+        await page.waitForLoadState('domcontentloaded');
+        
+        // 等待一小段时间确保页面渲染完成
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        // 捕获截图
+        await page.screenshot({ 
+          path: outputPath, 
+          fullPage: screenshotOptions.fullPage 
+        });
+        
+        console.log(`截图已保存至: ${outputPath}`);
+        await context.close();
+        return outputPath;
+      } catch (error) {
+        lastError = error;
+        console.error(`截图捕获失败 (尝试 ${retryAttempt + 1}/${screenshotOptions.retryCount + 1}):`, error.message);
+        
+        if (retryAttempt < screenshotOptions.retryCount) {
+          retryAttempt++;
+          // 根据重试次数调整等待条件
+          if (retryAttempt === 1) {
+            console.log('切换到 "load" 等待条件');
+            screenshotOptions.waitUntil = 'load';
+          } else if (retryAttempt === 2) {
+            console.log('切换到 "commit" 等待条件');
+            screenshotOptions.waitUntil = 'commit';
+          }
+          
+          // 指数退避策略
+          const waitTime = Math.pow(2, retryAttempt) * 1000;
+          console.log(`等待 ${waitTime/1000} 秒后重试...`);
+          await new Promise(resolve => setTimeout(resolve, waitTime));
+        } else {
+          throw lastError; // 重新抛出最后一个错误
+        }
+      }
+    }
     
-    // 导航到页面
-    await page.goto(url, { 
-      waitUntil: screenshotOptions.waitUntil,
-      timeout: screenshotOptions.timeout 
-    });
-    
-    // 等待页面稳定
-    await page.waitForLoadState('networkidle');
-    
-    // 捕获截图
-    await page.screenshot({ 
-      path: outputPath, 
-      fullPage: screenshotOptions.fullPage 
-    });
-    
-    console.log(`截图已保存至: ${outputPath}`);
-    return outputPath;
-  } catch (error) {
-    console.error('截图捕获失败:', error);
-    throw error; // 重新抛出错误以便调用者处理
+    throw lastError; // 如果所有重试都失败，抛出最后一个错误
   } finally {
     await browser.close();
   }
